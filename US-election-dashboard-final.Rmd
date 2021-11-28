@@ -1,0 +1,468 @@
+---
+title: "Untitled"
+author: "Anh"
+date: "12/24/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+#library(flexdashboard)
+library(ggplot2)
+#library(usmap)
+library(dplyr)
+library(DBI)
+library(lubridate)
+library(tidyverse)
+library(scales)
+library(maps)
+library(readxl)
+library(DT)
+library(shiny)
+library(plotly)
+
+```
+
+
+## Import data
+```{r message=FALSE, warning=FALSE, include=FALSE}
+#governors
+gov_county_candidate <- read_csv("governors_county_candidate.csv")
+gov_county <- read_csv("governors_county.csv")
+#senate
+senate_county_candidate <- read_csv("senate_county_candidate.csv")
+senate_county <- read_csv("senate_county.csv")
+senate_state <- read_csv("senate_state.csv")
+#house
+house_candidate <- read_csv("house_candidate.csv")
+house_state <- read_csv("house_state.csv")
+#president
+president_county <- read_delim("president_county.csv", delim = ",")
+president_state <- read_delim("president_state.csv", delim = ",")
+president_county_candidate <- read_delim("president_county_candidate.csv", delim = ",")
+president_voting_result <- read_excel("presidentvotingresult.xlsx")
+
+party_colors <- c("#2E74C0", "#CB454A") 
+```
+
+
+# fix data
+```{r message=FALSE, warning=FALSE, include=FALSE}
+president_voting_result <- president_voting_result %>%
+    mutate(
+      #delete % and ,
+      Biden_Percent = gsub("%", "", president_voting_result$Biden_Percent),
+      Trump_Percent = gsub("%", "", president_voting_result$Trump_Percent),
+      Biden_Votes = gsub(",", "", president_voting_result$Biden_Votes),
+      Trump_Votes = gsub(",", "", president_voting_result$Trump_Votes),
+      #change col type
+      Biden_Percent = round(as.double(Biden_Percent), 2),
+      Biden_Votes = round(as.double(Biden_Votes), 2),
+      Trump_Percent = round(as.double(Trump_Percent), 2),
+      Trump_Votes = round(as.double(Trump_Votes), 2),
+      #fix wrong value
+      Biden_Percent = if_else(Biden_Percent < 0.9, Biden_Percent *
+                                100 , Biden_Percent),
+      Trump_Percent = if_else(Trump_Percent < 0.9, Trump_Percent *
+                                100 , Trump_Percent),
+      #add winner column
+      winner = if_else(Trump_Percent < Biden_Percent, "DEM", "REP" )
+    ) %>% 
+  left_join(president_state, by = c("States"="state")) %>%
+  rename(popular_vote = total_votes) %>% 
+  mutate_all(funs(replace_na(.,0)))
+```
+
+
+
+------------------- PRESIDENT -----------------------
+## Map result
+
+```{r message=FALSE, warning=FALSE}
+###prepare map
+prevoteresult <- president_voting_result
+prevoteresult$region <- tolower(president_voting_result$States)
+state_map <- map_data("state")
+election_map <- left_join(state_map, prevoteresult, by = "region")
+
+centroids <- data.frame(region = tolower(state.name),
+                        long = state.center$x,
+                        lat = state.center$y)
+centroids$abb <- state.abb[match(centroids$region, tolower(state.name))]
+centroids_pre <- merge(election_map, centroids, by = "region")
+
+###plot
+
+p <- ggplot(election_map, 
+            aes(
+              long,
+              lat,
+              group = group,
+              fill = winner,
+              text = paste(
+                '</br> ', States,
+                "</br>% Biden:",Biden_Percent,
+                "</br>% Biden Total Vote:",Biden_Votes,
+                "</br>% Trump:",Trump_Percent,
+                "</br>% Trump Total Vote:",Trump_Votes ))) +
+  geom_polygon(colour = "white", size = 0.2) +
+  geom_text(
+    data = centroids_pre,
+    aes(long.y, lat.y, label = abb),
+    size = 2,
+    hjust = 0.5,
+    color = "white"
+  ) +
+  scale_fill_manual(values = party_colors) +
+  labs(x = NULL, y = NULL, fill = NULL) +
+  theme_void() 
+
+ggplotly(p, tooltip = "text")
+
+```
+## electoral party bar
+```{r message=FALSE, warning=FALSE, include=FALSE}
+fcol <- c("f", "f")
+electbar <- president_voting_result %>%
+  select(Biden_Harris_EV, Trump_Pence_EV) %>%
+  pivot_longer( cols= everything(),
+    names_to = "candidate",
+    values_to = "votes") %>% 
+  group_by(candidate) %>% 
+  summarize(votes = sum(votes)) %>% 
+  mutate(party = if_else(candidate == "Biden_Harris_EV", "DEM", "REP"), fakecol1 = fcol) 
+
+
+electcol <-ggplot(electbar, aes(votes,fakecol1,fill= party
+                     , text = paste(
+                "</br>",candidate,
+                "</br>",votes,"votes")
+                )) + 
+  geom_bar(stat="identity", position = position_fill(reverse = TRUE)) + 
+  geom_vline(xintercept = 0.5) +
+  geom_text(aes(x=0.5, label=" 270 to win"), colour="white", angle = 180,  text=element_text(size=11)) +
+  scale_fill_manual(values = party_colors)
+ggplotly(electcol, tooltip = "text")
+
+```
+
+
+
+###electoral vote map
+```{r}
+b <- ggplot(state_map,
+            aes(long,
+                lat,
+                group = group,)) +
+  geom_polygon(fill = "white", color = "black", size = 0.3) +
+  geom_point(data = centroids_pre,
+             aes(
+               long.y,
+               lat.y,
+               size = ifelse(Biden_Harris_EV == 0, NA, Biden_Harris_EV),
+               text = paste(
+                 '</br>',
+                 States,
+                 "</br>Biden Electoral votes:",
+                 Biden_Harris_EV,
+                 "</br>Trump Electoral votes:",
+                 Trump_Pence_EV
+               )
+             ),
+             colour = "#2E74C0") +
+  labs(x = NULL,
+       y = NULL,
+       size = "Number of electoral votes",
+       color = "Party") +
+  geom_point(data = centroids_pre,
+             aes(
+               long.y,
+               lat.y,
+               size = ifelse(Trump_Pence_EV == 0, NA, Trump_Pence_EV)
+             ),
+             colour = "#CB454A")
+ggplotly(b, tooltip = "text")
+
+
+```
+
+
+###vote bar
+```{r message=FALSE, warning=FALSE, include=FALSE}
+vote_data_plot = president_voting_result %>%
+  summarise(
+    `Biden/Harris` = sum(Biden_Harris_EV),
+    `Trump/Pence` = sum(Trump_Pence_EV),
+    Biden_pop_vote = sum(Biden_Votes),
+    Trump_pop_vote = sum(Trump_Votes)
+  ) %>%
+  pivot_longer(
+    -c(Biden_pop_vote, Trump_pop_vote),
+    names_to = "Candidate",
+    values_to = c("Electoral Votes")
+  )  %>%
+  mutate(
+    `Popular Votes` = if_else(Candidate == "Biden/Harris", Biden_pop_vote, Trump_pop_vote),
+    `Party` = if_else(Candidate == "Biden/Harris", "DEM", "REP")
+  ) %>%
+  select(-c(Biden_pop_vote, Trump_pop_vote)) %>%
+  mutate(
+    `% Electoral Votes` = round(`Electoral Votes` / sum(`Electoral Votes`), 2),
+    `% Popular Votes` = round(`Popular Votes` / sum(`Popular Votes`), 2)
+  )
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# plot
+electvote <-
+  ggplot(vote_data_plot,
+         aes(
+           x = Candidate,
+           y = `Electoral Votes`,
+           fill = Party,
+           text = paste(
+             '</br>', Candidate,
+             "</br>",`Electoral Votes`,"votes",
+             "</br>",`% Electoral Votes`*100,"% "
+           )
+         )) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  scale_fill_manual(values = party_colors) + labs(x=NULL,y=NULL)
+ggplotly(electvote, tooltip = "text")
+
+popvote <- 
+  ggplot(vote_data_plot,aes(x = Candidate, y = `Popular Votes`, fill = Party),
+           text = paste(
+             '</br>', Candidate,
+             "</br>",`Popular Votes`,"votes",
+             "</br>",`% Popular Votes`*100,"% "
+           )) + 
+  geom_col(position = "dodge", width = 0.2) + 
+  coord_flip() +
+  scale_fill_manual(values = party_colors)+ labs(x=NULL,y=NULL)
+ggplotly(popvote, tooltip = "text")+
+  theme_minimal()
+```
+
+###winner by state by county
+```{r message=FALSE, warning=FALSE, include=FALSE}
+lolipre <-  president_county_candidate %>% 
+  filter(won == TRUE) %>% 
+  group_by(state,candidate) %>% 
+  summarise(total_votes = sum(total_votes)) %>% 
+  group_by(state) %>%  
+  slice_max(total_votes, n=2) %>%
+  pivot_wider(
+    names_from = candidate, 
+    values_from = total_votes
+  ) %>% 
+  mutate_all(funs(replace_na(.,0))) %>% 
+  mutate( distance = `Joe Biden` - `Donald Trump`) 
+
+ggplot(lolipre) +
+  geom_segment( aes(x=state, xend=state, y=`Donald Trump`, yend=`Joe Biden`), color="grey") +
+  geom_point( aes(x=state, y=`Donald Trump`), color="#2E74C0", size=2 ) +
+  geom_point( aes(x=state, y=`Joe Biden`), color="#CB454A", size=2 ) +
+  coord_flip()+
+  theme(legend.position = "none") +                                    
+  scale_y_continuous(labels = comma)
+  
+```
+
+
+
+-------------------- SENATE ------------------------
+```{r message=FALSE, warning=FALSE, include=FALSE}
+senate_state_winner <- senate_county_candidate %>%
+  group_by(state, candidate, party) %>%
+  summarise(totalvotes = sum(total_votes)) %>%
+  group_by(state) %>% 
+  slice_max(totalvotes, n = 2) %>%
+  mutate(totalvotes=if_else(totalvotes == 86046, 300000, totalvotes)) %>% 
+ arrange(desc(totalvotes), party, candidate, .by_group = TRUE)
+###change other candidate to another column
+subset <- senate_state_winner[seq(from=2, to=nrow(senate_state_winner), by=2),]
+senate_graph_data <- senate_state_winner %>%
+  slice_max(totalvotes, n = 1) %>% 
+  left_join(subset, by = "state")
+```
+
+## Map result
+```{r message=FALSE, warning=FALSE, include=FALSE}
+###prepare map
+senate_graph_data$region <- tolower(senate_graph_data$state)
+senate_map <- left_join(state_map, senate_graph_data, by = "region")
+centroids_senate <- merge(senate_map, centroids, by = "region")
+```
+
+```{r}
+###plot
+senate <- ggplot(senate_map,
+       aes(long,
+           lat,
+           group = group,
+           fill = party.x,
+           text = paste(
+                '</br>',state,
+                "</br>",candidate.x, "  ",totalvotes.x,
+                "</br>",candidate.y, "  ",totalvotes.y
+                )
+           )) +
+  geom_polygon(colour = "white") +
+  geom_text(
+    data = centroids_senate,
+    aes(long.y, lat.y, label = abb),
+    size = 2,
+    hjust = 0.5,
+    color = "white"
+  ) +
+  
+  #scale_fill_discrete(breaks=c("DEM","REP")) +
+  scale_fill_manual(values = party_colors) +
+  #
+  labs(x = NULL, y = NULL, fill = NULL) +
+  theme_void()
+
+ggplotly(senate, tooltip = "text")
+
+```
+## party bar
+```{r}
+senate_col <- senate_county_candidate %>%
+  group_by(state, candidate, party) %>%
+  summarise(totalvotes = sum(total_votes)) %>% 
+  group_by(party) %>% 
+  tally() %>% 
+  filter(party == c("DEM", "REP")) %>%
+  mutate(fakecol = fcol)
+senate_col
+scol <-  ggplot(senate_col,aes(n,fakecol,fill= party, text = paste(
+                "</br>",party,
+                "</br>",n, "seats"))) + 
+  geom_bar(stat="identity", position = position_fill(reverse = TRUE)) + 
+  geom_vline(xintercept = 0.5 ) +
+  scale_fill_manual(values = party_colors)
+ggplotly(scol, tooltip = "text")
+  
+```
+
+
+-------------------- HOUSE ------------------------
+
+```{r}
+
+house_candidate_plot <-
+  house_candidate %>% 
+  mutate(region =  sub("’s.*", "", district)) %>% 
+  mutate(region =  sub("at large", "", region)) %>% 
+  filter(won == TRUE) %>%
+  select(region, party) %>%
+  distinct()  %>%
+  group_by(region) %>%
+  mutate(partyno = n())  %>%
+  mutate(party = if_else(partyno > 1 , "DEM & REP", party)) %>% 
+  distinct()
+
+house_candidate_plot$region <- tolower(house_candidate_plot$region)
+house_map <- left_join(state_map, house_candidate_plot, by = "region")
+centroids_house <- merge(house_map, centroids, by = "region")
+```
+```{r}
+houseplot <- ggplot(house_map,
+       aes(long,
+           lat,
+           group = group,
+           fill = party, 
+           text = paste(
+                '</br>',region,
+                "</br>",party
+                )
+           )) +
+  geom_polygon(color = "white", size = 0.3) +
+  geom_text(
+    data = centroids_house,
+    aes(long.y, lat.y, label = abb),
+    size = 1.5,
+    hjust = 0.5,
+    color = "white"
+  ) +
+  scale_fill_manual(breaks = c("DEM", "REP", "DEM & REP", "NA"), 
+                    values=c("#2E74C0", "#CB454A", "darkgreen", "grey")) 
+  scale_fill_discrete(name = "Party", labels = c("DEM", "REP", "DEM & REP"))
+ggplotly(houseplot, tooltip = "text")
+```
+
+###vote bar
+```{r}
+senate_col <- senate_county_candidate %>%
+  group_by(state, candidate, party) %>%
+  summarise(totalvotes = sum(total_votes)) %>% 
+  group_by(party) %>% 
+  tally() %>% 
+  filter(party == c("DEM", "REP")) %>%
+  mutate(fakecol = fcol)
+senate_col
+scol <-  ggplot(senate_col,aes(n,fakecol,fill= party, text = paste(
+                "</br>",party,
+                "</br>",n, "seats"))) + 
+  geom_bar(stat="identity", position = position_fill(reverse = TRUE)) + 
+  geom_vline(xintercept = 0.5 ) +
+  scale_fill_manual(values = party_colors)
+ggplotly(scol, tooltip = "text")
+```
+
+-------------------- GOVERNOR ------------------------
+```{r}
+gov_state_winner <- 
+  gov_county_candidate %>%
+  group_by(state, candidate, party) %>%
+  summarise(votes = sum(votes)) %>%
+  group_by(state) %>%
+  slice_max(votes, n = 2) 
+subset1 <- gov_state_winner[seq(from=2, to=nrow(senate_state_winner), by=2),]
+gov_graph_data <- gov_state_winner %>%
+  slice_max(votes, n = 1) %>% 
+  left_join(subset1, by = "state")
+```
+###map result
+```{r message=FALSE, warning=FALSE, include=FALSE}
+###prepare map
+gov_graph_data$region <- tolower(gov_graph_data$state)
+gov_map <- left_join(state_map, gov_graph_data, by = "region")
+centroids_gov <- merge(gov_map, centroids, by = "region")
+#gov_map <- gov_map replace_na(gov_map$party.x, "No election in 2020" )
+gov_map$party.x[is.na(gov_map$party.x)] <- "No election in 2020"
+ 
+
+```
+
+```{r}
+###plot
+govmap <- ggplot(gov_map,
+       aes(long,
+           lat,
+           group = group,
+           fill = party.x,
+           text = paste(
+                '</br>',state,
+                "</br>",candidate.x, " ", party.x, "  ",votes.x,
+                "</br>",candidate.y, " ", party.y, "  ",votes.y
+                )
+           )) +
+  geom_polygon(colour = "white") +
+  geom_text(
+    data = centroids_gov,
+    aes(long.y, lat.y, label = abb),
+    size = 2,
+    hjust = 0.5,
+    color = "white"
+  ) +
+
+  scale_fill_manual(breaks = c("DEM", "REP", "No election in 2020"), 
+                    values=c("#2E74C0", "#CB454A", "grey")) +
+  #
+  labs(x = NULL, y = NULL, fill = NULL) 
+
+ggplotly(govmap, tooltip = "text")
+
+```
